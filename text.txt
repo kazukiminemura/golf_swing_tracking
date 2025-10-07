@@ -23,4 +23,4 @@ python train_golfclubhead_yolov8.py \
 クラス名は club_head を 0 番に置く前提（1クラス）。複数にしたい場合は YAML 内 names: を調整。
 
 
-python train_golfclubhead_yolov8.pyython train_golfclubhead_yolov8.py --data_root club_head --export_ov
+python train_golfclubhead_yolov8.py --data_root club_head --export_ov
