@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Golf Swing Viewer</title>
+    <link rel="stylesheet" href="https://pyscript.net/latest/pyscript.css" />
+    <script defer src="https://pyscript.net/latest/pyscript.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 1.5rem;
+        background: #101418;
+        color: #f4f6f8;
+      }
+
+      h1 {
+        margin-top: 0;
+        font-size: 1.75rem;
+      }
+
+      .panel {
+        max-width: 960px;
+        margin: 0 auto;
+        background: rgba(18, 26, 32, 0.92);
+        border-radius: 16px;
+        padding: 1.5rem;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+
+      label {
+        font-weight: 600;
+      }
+
+      input[type="text"] {
+        flex: 1 1 240px;
+        min-width: 200px;
+        padding: 0.6rem 0.75rem;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(9, 14, 18, 0.8);
+        color: inherit;
+      }
+
+      button {
+        padding: 0.65rem 1.2rem;
+        border-radius: 999px;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        background: #32ba94;
+        color: #061115;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(50, 186, 148, 0.35);
+      }
+
+      .status {
+        min-height: 1.2rem;
+        margin: 0 0 1rem 0;
+        font-size: 0.95rem;
+        color: rgba(255, 255, 255, 0.85);
+      }
+
+      .video-wrapper {
+        position: relative;
+        width: 100%;
+        max-width: 900px;
+        margin: 0 auto;
+        border-radius: 16px;
+        overflow: hidden;
+        background: #000;
+      }
+
+      video,
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      canvas {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+      }
+
+      footer {
+        margin-top: 2rem;
+        text-align: center;
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.55);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>Golf Club Head Overlay (PyScript)</h1>
+      <p>Enter a completed job ID to stream the analysed video with a live bounding box overlay rendered in the browser using PyScript.</p>
+      <div class="controls">
+        <label for="jobId">Job ID</label>
+        <input id="jobId" type="text" placeholder="example: 20240101-abcdef" autocomplete="off" />
+        <button id="loadBtn" type="button">Load</button>
+      </div>
+      <p id="status" class="status">Waiting for a job ID...</p>
+      <div class="video-wrapper">
+        <video id="resultVideo" controls playsinline crossorigin="anonymous"></video>
+        <canvas id="overlay"></canvas>
+      </div>
+    </div>
+
+    <footer>Powered by FastAPI, OpenVINO, and PyScript.</footer>
+
+    <py-script>
+import asyncio
+import math
+from typing import Dict, List, Optional, Tuple
+
+from js import console, document
+from pyodide.ffi import create_proxy
+from pyodide.http import pyfetch
+
+
+video = document.getElementById("resultVideo")
+canvas = document.getElementById("overlay")
+ctx = canvas.getContext("2d")
+status_el = document.getElementById("status")
+load_btn = document.getElementById("loadBtn")
+job_input = document.getElementById("jobId")
+
+bbox_map: Dict[int, List[float]] = {}
+point_map: Dict[int, Tuple[float, float]] = {}
+confidence_map: Dict[int, float] = {}
+fps: float = 30.0
+ready: bool = False
+last_drawn_frame: Optional[int] = None
+callbacks: List = []
+
+
+def set_status(message: str) -> None:
+    status_el.innerText = message
+
+
+def reset_state() -> None:
+    global bbox_map, point_map, confidence_map, ready, last_drawn_frame
+    bbox_map = {}
+    point_map = {}
+    confidence_map = {}
+    ready = False
+    last_drawn_frame = None
+    ctx.clearRect(0, 0, canvas.width or 0, canvas.height or 0)
+
+
+async def load_job() -> None:
+    global fps, ready
+    job_id = job_input.value.strip()
+    if not job_id:
+        set_status("Please enter a job ID.")
+        return
+
+    reset_state()
+    set_status("Loading artifacts...")
+
+    try:
+        results_resp = await pyfetch(f"/api/jobs/{job_id}/results")
+        if results_resp.status != 200:
+            raise RuntimeError(f"results endpoint returned {results_resp.status}")
+
+        trajectory_resp = await pyfetch(f"/api/jobs/{job_id}/trajectory.json")
+        if trajectory_resp.status != 200:
+            raise RuntimeError(f"trajectory fetch failed ({trajectory_resp.status})")
+        trajectory_js = await trajectory_resp.json()
+        trajectory = trajectory_js.to_py()
+
+        stats_resp = await pyfetch(f"/api/jobs/{job_id}/stats.json")
+        if stats_resp.status == 200:
+            stats_js = await stats_resp.json()
+            stats = stats_js.to_py()
+            fps_value = stats.get("fps") or 30.0
+            try:
+                fps_value = float(fps_value)
+            except (ValueError, TypeError):
+                fps_value = 30.0
+            fps = max(1.0, fps_value)
+        else:
+            fps = 30.0
+
+        for entry in trajectory:
+            frame_no = int(entry.get("frame", 0))
+            x_val = float(entry.get("x", 0.0))
+            y_val = float(entry.get("y", 0.0))
+            point_map[frame_no] = (x_val, y_val)
+            bbox = entry.get("bbox")
+            if bbox:
+                bbox_map[frame_no] = [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+            confidence_map[frame_no] = float(entry.get("confidence", 0.0))
+
+        video.src = f"/api/jobs/{job_id}/video"
+        video.load()
+        ready = True
+        set_status("Loaded. Press play to view the overlay.")
+
+    except Exception as exc:  # noqa: BLE001
+        console.error(exc)
+        set_status(f"Failed to load job: {exc}")
+        ready = False
+
+
+def ensure_canvas_size() -> None:
+    if video.videoWidth and video.videoHeight:
+        canvas.width = int(video.videoWidth)
+        canvas.height = int(video.videoHeight)
+
+
+def draw_overlay(_event) -> None:
+    global last_drawn_frame
+    if not ready or canvas.width == 0 or canvas.height == 0:
+        return
+
+    frame_idx = max(0, int(video.currentTime * fps + 0.5))
+    candidate = frame_idx
+    if candidate in point_map or candidate in bbox_map:
+        last_drawn_frame = candidate
+    elif last_drawn_frame is not None:
+        candidate = last_drawn_frame
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    point = point_map.get(candidate)
+    bbox = bbox_map.get(candidate)
+    confidence = confidence_map.get(candidate, 0.0)
+
+    if bbox is None and point:
+        half = 25.0
+        bbox = [point[0] - half, point[1] - half, point[0] + half, point[1] + half]
+
+    if bbox:
+        x1, y1, x2, y2 = bbox
+        width = max(1.0, x2 - x1)
+        height = max(1.0, y2 - y1)
+        ctx.lineWidth = 2.0
+        ctx.strokeStyle = "rgba(0, 200, 255, 0.9)"
+        ctx.strokeRect(x1, y1, width, height)
+        label = f"{confidence:.2f}"
+        ctx.fillStyle = "rgba(0, 200, 255, 0.65)"
+        text_x = x1 + 4
+        text_y = y1 - 8 if y1 - 8 > 16 else y1 + 20
+        ctx.font = "16px sans-serif"
+        ctx.fillText(label, text_x, text_y)
+
+    if point:
+        ctx.beginPath()
+        ctx.arc(point[0], point[1], 6.0, 0, math.tau)
+        ctx.fillStyle = "rgba(255, 64, 64, 0.85)"
+        ctx.fill()
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)"
+        ctx.stroke()
+
+
+def on_loaded_metadata(_event) -> None:
+    ensure_canvas_size()
+    draw_overlay(None)
+
+
+def on_resize(_event) -> None:
+    ensure_canvas_size()
+    draw_overlay(None)
+
+
+def on_button_click(_event) -> None:
+    asyncio.ensure_future(load_job())
+
+
+def on_key_down(event) -> None:
+    if event.key == "Enter":
+        asyncio.ensure_future(load_job())
+
+
+metadata_proxy = create_proxy(on_loaded_metadata)
+timeupdate_proxy = create_proxy(draw_overlay)
+seek_proxy = create_proxy(draw_overlay)
+resize_proxy = create_proxy(on_resize)
+button_proxy = create_proxy(on_button_click)
+key_proxy = create_proxy(on_key_down)
+
+callbacks.extend([metadata_proxy, timeupdate_proxy, seek_proxy, resize_proxy, button_proxy, key_proxy])
+
+video.addEventListener("loadedmetadata", metadata_proxy)
+video.addEventListener("timeupdate", timeupdate_proxy)
+video.addEventListener("seeked", seek_proxy)
+video.addEventListener("play", timeupdate_proxy)
+video.addEventListener("pause", timeupdate_proxy)
+document.defaultView.addEventListener("resize", resize_proxy)
+load_btn.addEventListener("click", button_proxy)
+job_input.addEventListener("keydown", key_proxy)
+
+set_status("Waiting for a job ID...")
+    </py-script>
+  </body>
+</html>

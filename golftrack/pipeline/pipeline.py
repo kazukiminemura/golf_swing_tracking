@@ -375,10 +375,24 @@ class AnalysisPipeline:
         if not cap.isOpened():
             raise RuntimeError("Failed to re-open video for overlay export.")
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(job_video_path), fourcc, fps, (width, height))
+        # Prefer H.264 for web playback; try common FourCCs then fall back.
+        chosen_fourcc = None
+        writer = None
+        for cc in ["avc1", "H264", "X264", "h264", "mp4v"]:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*cc)
+                candidate = cv2.VideoWriter(str(job_video_path), fourcc, fps, (width, height))
+                if candidate.isOpened():
+                    writer = candidate
+                    chosen_fourcc = cc
+                    break
+                else:
+                    candidate.release()
+            except Exception:  # noqa: BLE001
+                pass
+        if writer is None:
+            raise RuntimeError("Failed to initialise VideoWriter for output video.")
 
-        path_points: List[Tuple[int, Tuple[float, float]]] = []
         frame_idx = 0
 
         impact_snapshot = output_dir / "impact.png"
@@ -389,16 +403,28 @@ class AnalysisPipeline:
             if not ret:
                 break
 
+            frame_h, frame_w = frame.shape[:2]
             measurement = measurement_map.get(frame_idx)
+            bbox_to_draw: Optional[Tuple[float, float, float, float]] = None
             if measurement and measurement.bbox:
-                frame_h, frame_w = frame.shape[:2]
-                x1, y1, x2, y2 = measurement.bbox
+                bbox_to_draw = measurement.bbox
+
+            point = smoothed_map.get(frame_idx)
+            if bbox_to_draw is None and point:
+                # Fallback: draw a fixed-size box around the tracked point
+                half_size = 25
+                cx, cy = point
+                bbox_to_draw = (cx - half_size, cy - half_size, cx + half_size, cy + half_size)
+
+            if bbox_to_draw:
+                x1, y1, x2, y2 = bbox_to_draw
                 x1_i = max(0, min(frame_w - 1, int(round(x1))))
                 y1_i = max(0, min(frame_h - 1, int(round(y1))))
                 x2_i = max(0, min(frame_w - 1, int(round(x2))))
                 y2_i = max(0, min(frame_h - 1, int(round(y2))))
                 cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), (255, 0, 0), 2)
-                label = f"{measurement.detection_conf:.2f}"
+                confidence = measurement.detection_conf if measurement else 0.0
+                label = f"{confidence:.2f}"
                 text_y = max(0, min(frame_h - 1, y1_i - 10))
                 cv2.putText(
                     frame,
@@ -411,26 +437,9 @@ class AnalysisPipeline:
                     cv2.LINE_AA,
                 )
 
-            point = smoothed_map.get(frame_idx)
             if point:
-                path_points.append((frame_idx, point))
-                # Draw trajectory
-                for i in range(1, len(path_points)):
-                    pt1 = tuple(map(int, path_points[i - 1][1]))
-                    pt2 = tuple(map(int, path_points[i][1]))
-                    cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
+                # Highlight the club head position with a marker
                 cv2.circle(frame, tuple(map(int, point)), 6, (0, 0, 255), -1)
-                speed_value = speeds.get(frame_idx, 0.0)
-                cv2.putText(
-                    frame,
-                    f"{speed_value:.2f} m/s",
-                    (30, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
             writer.write(frame)
 
             if frame_numbers and frame_idx == frame_numbers[0] and first_snapshot.name not in snapshots and point:
@@ -445,6 +454,35 @@ class AnalysisPipeline:
         cap.release()
         writer.release()
 
+        # If we could not use an H.264 FourCC directly, try ffmpeg re-encode to H.264.
+        try:
+            if chosen_fourcc not in {"avc1", "H264", "X264", "h264"}:
+                import shutil
+                import subprocess
+
+                ffmpeg = shutil.which("ffmpeg")
+                if ffmpeg:
+                    h264_path = output_dir / "result_h264.mp4"
+                    cmd = [
+                        ffmpeg,
+                        "-y",
+                        "-i",
+                        str(job_video_path),
+                        "-c:v",
+                        "libx264",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        str(h264_path),
+                    ]
+                    subprocess.run(cmd, check=True)
+                    # Replace artifact path to point to H.264 output
+                    job_video_path = h264_path
+        except Exception as _exc:  # noqa: BLE001
+            # Best-effort re-encode; keep original if re-encode fails
+            pass
+
         # Export CSV
         with trajectory_csv_path.open("w", encoding="utf-8") as csv_file:
             csv_file.write("frame,x,y,speed_mps\n")
@@ -453,15 +491,27 @@ class AnalysisPipeline:
                 csv_file.write(f"{frame_no},{x:.4f},{y:.4f},{speeds.get(frame_no, 0.0):.6f}\n")
 
         # Export JSON
-        trajectory_payload = [
-            {
-                "frame": frame_no,
-                "x": smoothed_map.get(frame_no, (0.0, 0.0))[0],
-                "y": smoothed_map.get(frame_no, (0.0, 0.0))[1],
-                "speed_mps": speeds.get(frame_no, 0.0),
-            }
-            for frame_no in frame_numbers
-        ]
+        trajectory_payload = []
+        for frame_no in frame_numbers:
+            x, y = smoothed_map.get(frame_no, (0.0, 0.0))
+            measurement = measurement_map.get(frame_no)
+            bbox = None
+            confidence = 0.0
+            if measurement:
+                confidence = measurement.detection_conf
+                if measurement.bbox:
+                    bbox = [float(measurement.bbox[0]), float(measurement.bbox[1]), float(measurement.bbox[2]), float(measurement.bbox[3])]
+
+            trajectory_payload.append(
+                {
+                    "frame": frame_no,
+                    "x": float(x),
+                    "y": float(y),
+                    "speed_mps": speeds.get(frame_no, 0.0),
+                    "bbox": bbox,
+                    "confidence": confidence,
+                }
+            )
 
         with trajectory_json_path.open("w", encoding="utf-8") as json_file:
             json.dump(trajectory_payload, json_file, indent=2)
@@ -480,6 +530,8 @@ class AnalysisPipeline:
             "duration_s": duration_s,
             "frames": len(frame_numbers),
             "fps": fps,
+            "width": width,
+            "height": height,
         }
         with stats_json_path.open("w", encoding="utf-8") as stats_file:
             json.dump(stats_payload, stats_file, indent=2)
