@@ -261,24 +261,19 @@ function renderTrajectoryPlot() {
   const padding = 20;
   const width = trajectoryPlot.width;
   const height = trajectoryPlot.height;
+  const videoWidth = currentStats?.width || (Math.max(...currentTrajectory.map((p) => p.x)) + 1);
+  const videoHeight = currentStats?.height || (Math.max(...currentTrajectory.map((p) => p.y)) + 1);
 
   trajectoryPlotCtx.clearRect(0, 0, width, height);
 
-  const xs = currentTrajectory.map((p) => p.x);
-  const ys = currentTrajectory.map((p) => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-
-  const rangeX = maxX - minX || 1;
-  const rangeY = maxY - minY || 1;
-  const scaleX = (width - padding * 2) / rangeX;
-  const scaleY = (height - padding * 2) / rangeY;
+  const usableWidth = Math.max(1, videoWidth);
+  const usableHeight = Math.max(1, videoHeight);
+  const scaleX = (width - padding * 2) / usableWidth;
+  const scaleY = (height - padding * 2) / usableHeight;
 
   const toCanvas = (point) => ({
-    x: padding + (point.x - minX) * scaleX,
-    y: height - padding - (point.y - minY) * scaleY,
+    x: padding + Math.max(0, Math.min(point.x, usableWidth)) * scaleX,
+    y: padding + Math.max(0, Math.min(point.y, usableHeight)) * scaleY,
   });
 
   trajectoryPlotCtx.lineWidth = 2;

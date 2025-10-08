@@ -75,6 +75,12 @@ class PipelineConfig:
     min_track_confidence: float = 0.4
     max_age: int = 30
     n_init: int = 3
+    min_bbox_area_px: float = 25.0
+    max_bbox_area_ratio: float = 0.02
+    min_bbox_aspect_ratio: float = 0.4
+    max_bbox_aspect_ratio: float = 3.0
+    max_center_jump_px: float = 160.0
+    max_area_change_ratio: float = 4.0
 
 
 @dataclass
