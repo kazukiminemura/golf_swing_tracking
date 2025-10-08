@@ -5,7 +5,7 @@ import sys, platform, importlib, traceback
 from ultralytics import YOLO
 import yaml
 
-# --- 参考情報の標準出力（任意） ---
+# --- 参老E��報の標準�E力（任意！E---
 print('[ENV] python:', sys.version.replace('\n', ' '))
 print('[ENV] executable:', sys.executable)
 print('[ENV] platform:', platform.platform())
@@ -34,9 +34,11 @@ def main():
     ap = argparse.ArgumentParser(description="YOLOv8 fine-tune (club head, CPU only)")
     ap.add_argument("--data_root", required=True, help="root containing {train,valid}/{images,labels}")
     ap.add_argument("--model", default="yolov8n.pt")
-    ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--epochs", type=int, default=200)
-    ap.add_argument("--batch", type=int, default=-1)   # -1:auto
+    # On CPU, auto-batch (-1) can be very slow; use a small fixed default.
+    ap.add_argument("--batch", type=int, default=4)
+    ap.add_argument("--device", default="auto", help="Ultralytics device: 'auto'|'cpu'|'0'|'0,1'|'cuda:0'")
     ap.add_argument("--project", default="runs/club_head")
     ap.add_argument("--name", default="yolov8_finetune_cpu")
     ap.add_argument("--resume", action="store_true")
@@ -45,12 +47,12 @@ def main():
     ap.add_argument("--export_onnx", action="store_true")
     args = ap.parse_args()
 
-    # --- データルート解決 ---
+    # --- チE�Eタルート解決 ---
     root = Path(args.data_root).resolve()
     if not root.exists():
         raise FileNotFoundError(f"[ERR] data_root does not exist: {root}")
 
-    # 必須フォルダ確認
+    # 忁E��フォルダ確誁E
     for p in ["train/images", "train/labels", "valid/images", "valid/labels"]:
         if not (root / p).exists():
             raise AssertionError(f"[ERR] missing: {root / p}")
@@ -74,33 +76,42 @@ def main():
         yaml_path.write_text(YAML_TPL.format(root=str(root).replace("\\", "/")), encoding="utf-8")
         print(f"[INFO] generated -> {yaml_path}")
 
-    # --- 学習（CPU固定） ---
+    # --- デバイス決定 ---
+    device_arg = args.device
+    if device_arg == "auto":
+        try:
+            import torch  # noqa: F401
+            device_arg = "0" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
+        except Exception:
+            device_arg = "cpu"
+    print(f"[INFO] using device: {device_arg}")
+
+    # --- 学習（指定デバイス） ---
     model = YOLO(args.model)
-    print("[INFO] start training on CPU...")
+    print(f"[INFO] start training on {device_arg}...")
     train_res = model.train(
         data=str(yaml_path),
         imgsz=args.imgsz,
         epochs=args.epochs,
         batch=args.batch,
-        device="cpu",                 # ★ CPU固定
+        device=device_arg,
         project=args.project,
         name=args.name,
         resume=args.resume,
-        # 便利系（必要に応じて有効化）
-        # workers=0,   # Windowsでの安全策
+        # workers=0,   # Windowsでの安定
         # cache=True,
     )
     print(f"[INFO] weights saved in: {train_res.save_dir}")
 
-    # --- 検証（CPU固定） ---
-    print("[INFO] validating on CPU...")
-    val_res = model.val(data=str(yaml_path), imgsz=args.imgsz, device="cpu")
+    # --- 検証（指定デバイス） ---
+    print(f"[INFO] validating on {device_arg}...")
+    val_res = model.val(data=str(yaml_path), imgsz=args.imgsz, device=device_arg)
     try:
         print(f"[VAL] mAP50={val_res.box.map50:.4f}  mAP50-95={val_res.box.map:.4f}")
     except Exception:
         print("[VAL] finished. (metrics structure may vary by version)")
 
-    # --- エクスポート（任意、CPU固定） ---
+    # --- エクスポ�Eト（任意、CPU固定！E---
     best_pt = Path(train_res.save_dir) / "weights" / "best.pt"
     if best_pt.exists():
         if args.export_ov:
@@ -112,9 +123,10 @@ def main():
     else:
         print(f"[WARN] best.pt not found: {best_pt}")
 
-    # --- 予測例 ---
+    # --- 予測侁E---
     print("\n[HINT] predict example:")
-    print(f'yolo task=detect mode=predict model="{best_pt}" source=/path/to/test.mp4 imgsz={args.imgsz} conf=0.25 device=cpu')
+    print(f'yolo task=detect mode=predict model="{best_pt}" source=/path/to/test.mp4 imgsz={args.imgsz} conf=0.25 device={device_arg}')
 
 if __name__ == "__main__":
     main()
+
