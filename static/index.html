@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Golf Swing Tracker</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Golf Swing Tracking</h1>
+    <p>Upload a swing video to generate trajectory overlays and speed metrics.</p>
+  </header>
+
+  <main>
+    <section class="card" id="upload-section">
+      <h2>New Analysis</h2>
+      <form id="upload-form">
+        <label for="video-input">Swing video (mp4/mov/avi)</label>
+        <input id="video-input" type="file" accept="video/*" required />
+
+        <label for="device-select">Device</label>
+        <select id="device-select">
+          <option value="">Auto</option>
+          <option value="CPU">CPU</option>
+          <option value="GPU">GPU</option>
+          <option value="NPU">NPU</option>
+        </select>
+
+        <button type="submit" id="upload-button">Start Analysis</button>
+      </form>
+      <p id="upload-status" class="status-text"></p>
+    </section>
+
+    <section class="card" id="jobs-section">
+      <h2>Jobs</h2>
+      <table id="jobs-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Status</th>
+            <th>Device</th>
+            <th>Progress</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card" id="results-section" hidden>
+      <h2>Results</h2>
+      <div class="player-wrapper">
+        <video id="result-video" controls></video>
+        <canvas id="trajectory-canvas"></canvas>
+      </div>
+
+      <div id="trajectory-overview" class="card-secondary">
+        <h3>Club Head Trajectory</h3>
+        <canvas id="trajectory-plot" width="640" height="360"></canvas>
+      </div>
+
+      <div id="stats-panel">
+        <h3>Speed Metrics</h3>
+        <ul>
+          <li><strong>Max speed:</strong> <span id="max-speed">-</span> m/s</li>
+          <li><strong>Average speed:</strong> <span id="avg-speed">-</span> m/s</li>
+          <li><strong>Impact frame:</strong> <span id="impact-frame">-</span></li>
+          <li><strong>Duration:</strong> <span id="duration">-</span> s</li>
+        </ul>
+        <div id="downloads">
+          <a id="download-video" href="#" download>Download video</a>
+          <a id="download-csv" href="#" download>Trajectory CSV</a>
+          <a id="download-json" href="#" download>Trajectory JSON</a>
+          <a id="download-stats" href="#" download>Stats JSON</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
