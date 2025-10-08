@@ -229,14 +229,19 @@ class AnalysisPipeline:
         device: Optional[str],
         progress_cb,
     ) -> PipelineResult:
-        device_name = (device or self.config.runtime.device).upper()
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Starting analysis job_id=%s device=%s input=%s", job_id, device_name, input_video)
-
         def emit(stage: str, value: float, message: Optional[str] = None) -> None:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Stage=%s progress=%.2f message=%s", stage, value, message)
             progress_cb(stage, value, message)
+
+        requested_device = (device or self.config.runtime.device).upper()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Starting analysis job_id=%s requested_device=%s input=%s",
+                job_id,
+                requested_device,
+                input_video,
+            )
 
         tracker = KalmanPointTracker(max_age=self.config.pipeline.max_age)
         cap = cv2.VideoCapture(str(input_video))
@@ -253,7 +258,7 @@ class AnalysisPipeline:
 
         emit("detecting", 0.1)
 
-        detector = self._get_detector(device_name)
+        detector, device_name = self._initialise_detector(requested_device, emit)
 
         while True:
             ret, frame = cap.read()
@@ -289,6 +294,8 @@ class AnalysisPipeline:
 
         if not any(m.filtered_xy for m in measurements):
             raise RuntimeError("No club head detections found in the provided video.")
+
+        measurement_map: Dict[int, FrameMeasurement] = {m.frame_idx: m for m in measurements}
 
         # Smooth trajectories
         filtered_points: List[Tuple[int, Tuple[float, float]]] = [
@@ -381,6 +388,28 @@ class AnalysisPipeline:
             ret, frame = cap.read()
             if not ret:
                 break
+
+            measurement = measurement_map.get(frame_idx)
+            if measurement and measurement.bbox:
+                frame_h, frame_w = frame.shape[:2]
+                x1, y1, x2, y2 = measurement.bbox
+                x1_i = max(0, min(frame_w - 1, int(round(x1))))
+                y1_i = max(0, min(frame_h - 1, int(round(y1))))
+                x2_i = max(0, min(frame_w - 1, int(round(x2))))
+                y2_i = max(0, min(frame_h - 1, int(round(y2))))
+                cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), (255, 0, 0), 2)
+                label = f"{measurement.detection_conf:.2f}"
+                text_y = max(0, min(frame_h - 1, y1_i - 10))
+                cv2.putText(
+                    frame,
+                    label,
+                    (x1_i, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
 
             point = smoothed_map.get(frame_idx)
             if point:
@@ -475,7 +504,45 @@ class AnalysisPipeline:
                 duration_s,
             )
 
-        return PipelineResult(artifacts=artifacts, stats=stats)
+        return PipelineResult(artifacts=artifacts, stats=stats, device=device_name)
+
+    def _initialise_detector(
+        self,
+        requested_device: str,
+        emit,
+    ) -> Tuple[OpenVINOYoloDetector, str]:
+        candidates = self._device_candidates(requested_device)
+        last_error: Optional[Exception] = None
+
+        for candidate in candidates:
+            try:
+                detector = self._get_detector(candidate)
+                if requested_device == "AUTO":
+                    emit("detecting", 0.1, f"Using {candidate}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Detector selected requested=%s chosen=%s",
+                        requested_device,
+                        candidate,
+                    )
+                return detector, candidate
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
+                        "Detector initialisation failed requested=%s candidate=%s error=%s",
+                        requested_device,
+                        candidate,
+                        exc,
+                    )
+
+        device_list = ", ".join(candidates) or requested_device
+        raise RuntimeError(f"Failed to initialise detector for devices: {device_list}") from last_error
+
+    def _device_candidates(self, requested_device: str) -> List[str]:
+        if requested_device == "AUTO":
+            return ["GPU", "NPU", "CPU"]
+        return [requested_device]
 
     def _get_detector(self, device: str) -> OpenVINOYoloDetector:
         key = device.upper()

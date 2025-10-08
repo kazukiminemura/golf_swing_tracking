@@ -40,6 +40,7 @@ class JobRecord:
 class PipelineResult:
     artifacts: ArtifactPaths
     stats: JobStats
+    device: Optional[str] = None
 
 
 class JobManager:
@@ -209,6 +210,8 @@ class JobManager:
                     record.device,
                     self._make_progress_callback(job_id),
                 )
+                if result.device:
+                    record.device = result.device
                 record.artifacts = result.artifacts
                 record.stats = result.stats
                 await self._update_status(record, JobStatus.SUCCEEDED, stage="completed", progress=1.0)
