@@ -1,0 +1,16 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor/OS
+.DS_Store
+*.swp
+*.tmp
+*.log
+
+# Project outputs and large artifacts
+outputs/
+
+# Model caches (optional)
+hf_models_cache/
