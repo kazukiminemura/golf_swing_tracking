@@ -2,7 +2,7 @@ task: detect
 mode: train
 model: yolov8n.pt
 data: /content/golf_swing_tracking/club_head/club_head.yaml
-epochs: 100
+epochs: 200
 time: null
 patience: 100
 batch: 4
@@ -13,7 +13,7 @@ cache: false
 device: '0'
 workers: 8
 project: runs/club_head
-name: yolov8_finetune_cpu2
+name: yolov8_finetune_cpu
 exist_ok: false
 pretrained: true
 optimizer: auto
@@ -103,4 +103,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: /content/golf_swing_tracking/runs/club_head/yolov8_finetune_cpu2
+save_dir: /content/golf_swing_tracking/runs/club_head/yolov8_finetune_cpu
