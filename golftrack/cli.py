@@ -74,13 +74,19 @@ def analyze_command(
 
     logger.info("Analysis complete job_id=%s", job_identifier)
     print("[INFO] Analysis complete")
-    print(f"  Video: {storage.job_dir(job_identifier) / artifacts.video_mp4}")
-    print(f"  Trajectory CSV: {storage.job_dir(job_identifier) / artifacts.trajectory_csv}")
-    print(f"  Trajectory JSON: {storage.job_dir(job_identifier) / artifacts.trajectory_json}")
-    print(f"  Stats JSON: {storage.job_dir(job_identifier) / artifacts.stats_json}")
+    if artifacts.video_mp4:
+        print(f"  Video: {storage.job_dir(job_identifier) / artifacts.video_mp4}")
+    if artifacts.trajectory_csv:
+        print(f"  Trajectory CSV: {storage.job_dir(job_identifier) / artifacts.trajectory_csv}")
+    if artifacts.trajectory_json:
+        print(f"  Trajectory JSON: {storage.job_dir(job_identifier) / artifacts.trajectory_json}")
+    if artifacts.stats_json:
+        print(f"  Stats JSON: {storage.job_dir(job_identifier) / artifacts.stats_json}")
     if artifacts.snapshots:
         for snap in artifacts.snapshots:
             print(f"  Snapshot: {storage.job_dir(job_identifier) / snap}")
+
+    # Legacy fields retained for compatibility with previous pipeline outputs.
     print(f"  Max speed: {result.stats.max_speed_mps:.2f} m/s")
     print(f"  Avg speed: {result.stats.avg_speed_mps:.2f} m/s")
     if result.stats.impact_frame is not None:

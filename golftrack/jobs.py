@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,6 +64,87 @@ class JobManager:
         self.worker_tasks: List[asyncio.Task[Any]] = []
         self._lock = asyncio.Lock()
         self._shutdown = asyncio.Event()
+
+        self.load_existing_jobs()
+
+    def load_existing_jobs(self) -> None:
+        """Populate job table from artifacts already on disk."""
+        if not self.storage.artifacts_dir.exists():
+            return
+
+        for job_dir in sorted(self.storage.artifacts_dir.iterdir()):
+            if not job_dir.is_dir():
+                continue
+            job_id = job_dir.name
+            if job_id in self.jobs:
+                continue
+
+            video_mp4: Optional[str] = None
+            video_candidates = ["result_h264.mp4", "result.mp4"]
+            for candidate in video_candidates:
+                candidate_path = job_dir / candidate
+                if candidate_path.exists():
+                    video_mp4 = candidate
+                    break
+            if video_mp4 is None:
+                mp4_files = list(job_dir.glob("*.mp4"))
+                if mp4_files:
+                    video_mp4 = mp4_files[0].name
+
+            trajectory_json = None
+            trajectory_path = job_dir / "trajectory.json"
+            if trajectory_path.exists():
+                trajectory_json = trajectory_path.name
+
+            trajectory_csv = None
+            csv_path = job_dir / "trajectory.csv"
+            if csv_path.exists():
+                trajectory_csv = csv_path.name
+
+            stats_json = None
+            stats_path = job_dir / "stats.json"
+            stats_payload: Dict[str, Any] = {}
+            if stats_path.exists():
+                stats_json = stats_path.name
+                try:
+                    stats_payload = json.loads(stats_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    stats_payload = {}
+
+            snapshots = [p.name for p in job_dir.iterdir() if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}]
+
+            input_candidates = sorted(self.storage.inputs_dir.glob(f"{job_id}.*"))
+            input_path = input_candidates[0] if input_candidates else self.storage.inputs_dir / f"{job_id}.mp4"
+
+            timestamp = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
+
+            stats = JobStats(
+                max_speed_mps=float(stats_payload.get("max_speed_mps", 0.0) or 0.0),
+                avg_speed_mps=float(stats_payload.get("avg_speed_mps", 0.0) or 0.0),
+                impact_frame=stats_payload.get("impact_frame"),
+                duration_s=float(stats_payload.get("duration_s", 0.0) or 0.0),
+            )
+
+            record = JobRecord(
+                id=job_id,
+                status=JobStatus.SUCCEEDED,
+                device=self.device_default,
+                created_at=timestamp,
+                updated_at=timestamp,
+                input_path=input_path,
+                progress=1.0,
+                stage="completed",
+                artifacts=ArtifactPaths(
+                    video_mp4=video_mp4,
+                    trajectory_csv=trajectory_csv,
+                    trajectory_json=trajectory_json,
+                    snapshots=snapshots,
+                    stats_json=stats_json,
+                ),
+                stats=stats,
+            )
+
+            self.jobs[job_id] = record
 
     async def start(self) -> None:
         if self.worker_tasks:
