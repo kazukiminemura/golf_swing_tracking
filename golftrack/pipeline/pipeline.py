@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import deque
@@ -458,6 +459,137 @@ class AnalysisPipeline:
 
         return True, None
 
+    def _initial_detection_score(
+        self,
+        bbox: Tuple[float, float, float, float],
+        frame_shape: Tuple[int, int, int],
+        confidence: float,
+    ) -> float:
+        frame_h, frame_w = frame_shape[:2]
+        if frame_w <= 0 or frame_h <= 0:
+            return confidence
+
+        x1, y1, x2, y2 = bbox
+        center_x = (x1 + x2) / 2.0
+        center_y = (y1 + y2) / 2.0
+        mid_x = frame_w / 2.0
+        mid_y = frame_h / 2.0
+        if center_x >= mid_x and center_y >= mid_y:
+            denom_x = max(frame_w - mid_x, 1.0)
+            denom_y = max(frame_h - mid_y, 1.0)
+            rightness = max(0.0, min(1.0, (center_x - mid_x) / denom_x))
+            bottomness = max(0.0, min(1.0, (center_y - mid_y) / denom_y))
+            location_score = 0.5 * (rightness + bottomness)
+        else:
+            location_score = -1.0
+        return location_score + 0.05 * confidence
+
+    def _smooth_swing_path(
+        self,
+        payload: List[Dict[str, float]],
+        frame_width: int,
+        frame_height: int,
+    ) -> None:
+        if len(payload) < 2:
+            return
+
+        frames = np.array([entry["frame"] for entry in payload], dtype=np.float64)
+        xs = np.array([entry["x"] for entry in payload], dtype=np.float64)
+        ys = np.array([entry["y"] for entry in payload], dtype=np.float64)
+
+        t = frames - frames[0]
+        duration = float(np.max(t))
+        if duration > 0.0:
+            t /= duration
+        else:
+            t = np.zeros_like(t)
+
+        degree_options = [1, 2]
+        best_fit = None
+        best_error = float("inf")
+
+        rank_warning = getattr(np, "RankWarning", RuntimeWarning)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", rank_warning)
+            for degree in degree_options:
+                if len(payload) <= degree:
+                    continue
+                try:
+                    coeffs_x = np.polyfit(t, xs, degree)
+                    coeffs_y = np.polyfit(t, ys, degree)
+                except Exception:  # noqa: BLE001
+                    continue
+                fit_x = np.polyval(coeffs_x, t)
+                fit_y = np.polyval(coeffs_y, t)
+                residual = np.mean((fit_x - xs) ** 2 + (fit_y - ys) ** 2)
+                penalty = 1e-3 * degree
+                score = residual + penalty
+                if score < best_error:
+                    best_error = score
+                    best_fit = (fit_x, fit_y, degree)
+
+        if best_fit is None:
+            return
+
+        fit_x, fit_y, selected_degree = best_fit
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Swing path smoothing applied degree=%s residual=%.5f",
+                selected_degree,
+                best_error,
+            )
+
+        max_x = max(float(frame_width) - 1.0, 0.0)
+        max_y = max(float(frame_height) - 1.0, 0.0)
+
+        for entry, new_x, new_y in zip(payload, fit_x, fit_y):
+            bbox = entry.get("bbox", [entry["x"], entry["y"], entry["x"], entry["y"]])
+            orig_cx = float(entry["x"])
+            orig_cy = float(entry["y"])
+            x1, y1, x2, y2 = bbox
+            width = max(2.0, x2 - x1)
+            height = max(2.0, y2 - y1)
+            half_w = width / 2.0
+            half_h = height / 2.0
+
+            cx = float(np.clip(new_x, 0.0, max_x))
+            cy = float(np.clip(new_y, 0.0, max_y))
+
+            shift_limit_x = max(10.0, 0.3 * width)
+            shift_limit_y = max(10.0, 0.3 * height)
+            delta_x = max(-shift_limit_x, min(shift_limit_x, cx - orig_cx))
+            delta_y = max(-shift_limit_y, min(shift_limit_y, cy - orig_cy))
+            cx = float(np.clip(orig_cx + delta_x, 0.0, max_x))
+            cy = float(np.clip(orig_cy + delta_y, 0.0, max_y))
+
+            left = cx - half_w
+            right = cx + half_w
+            if left < 0.0:
+                right -= left
+                left = 0.0
+            if right > max_x:
+                shift = right - max_x
+                left -= shift
+                right = max_x
+                if left < 0.0:
+                    left = 0.0
+            top = cy - half_h
+            bottom = cy + half_h
+            if top < 0.0:
+                bottom -= top
+                top = 0.0
+            if bottom > max_y:
+                shift = bottom - max_y
+                top -= shift
+                bottom = max_y
+                if top < 0.0:
+                    top = 0.0
+
+            entry["bbox"] = [float(left), float(top), float(right), float(bottom)]
+            entry["x"] = float((left + right) / 2.0)
+            entry["y"] = float((top + bottom) / 2.0)
+
     @debug_trace(name="AnalysisPipeline.run")
     def run(
         self,
@@ -538,31 +670,40 @@ class AnalysisPipeline:
                 break
 
             detections = detector.detect(frame)
-            best_detection = detections[0] if detections else None
             detection_bbox: Optional[Tuple[float, float, float, float]] = None
             detection_confidence: Optional[float] = None
 
-            if best_detection:
-                candidate_bbox, candidate_conf = best_detection
-                plausible, reason = self._is_plausible_detection(
-                    candidate_bbox,
-                    frame.shape,
-                    frame_idx,
-                    tracker.last_center,
-                    tracker.last_area,
-                    tracker.last_frame_idx,
-                )
-                if plausible:
-                    detection_bbox = candidate_bbox
-                    detection_confidence = candidate_conf
-                elif logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Frame %s detection rejected: %s (bbox=%s conf=%.3f)",
-                        frame_idx,
-                        reason,
-                        candidate_bbox,
-                        candidate_conf,
+            if detections:
+                if tracker.last_center is None:
+                    ordered_detections = sorted(
+                        detections,
+                        key=lambda det: self._initial_detection_score(det[0], frame.shape, det[1]),
+                        reverse=True,
                     )
+                else:
+                    ordered_detections = detections
+
+                for candidate_bbox, candidate_conf in ordered_detections:
+                    plausible, reason = self._is_plausible_detection(
+                        candidate_bbox,
+                        frame.shape,
+                        frame_idx,
+                        tracker.last_center,
+                        tracker.last_area,
+                        tracker.last_frame_idx,
+                    )
+                    if plausible:
+                        detection_bbox = candidate_bbox
+                        detection_confidence = candidate_conf
+                        break
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Frame %s detection rejected: %s (bbox=%s conf=%.3f)",
+                            frame_idx,
+                            reason,
+                            candidate_bbox,
+                            candidate_conf,
+                        )
 
             track_result = tracker.step(detection_bbox, detection_confidence, frame_idx, frame.shape)
 
@@ -632,6 +773,8 @@ class AnalysisPipeline:
 
         if not detection_payload:
             raise RuntimeError("No club head detections found in the provided video.")
+
+        self._smooth_swing_path(detection_payload, width, height)
 
         # If we could not use an H.264 FourCC directly, try ffmpeg re-encode to H.264.
         try:
