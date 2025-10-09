@@ -20,9 +20,15 @@ let currentJobId = null;
 let currentTrajectory = [];
 let currentStats = null;
 let overlayAnimationId = null;
+let trajectorySegments = [];
 
 const trajectoryCtx = trajectoryCanvas.getContext("2d");
 const trajectoryPlotCtx = trajectoryPlot ? trajectoryPlot.getContext("2d") : null;
+
+const BACKSWING_COLOUR = "#42b2ff";
+const DOWNSWING_COLOUR = "#ff7854";
+const PATH_LINE_WIDTH = 3;
+const DIRECTION_THRESHOLD = 1;
 
 uploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -168,6 +174,7 @@ async function loadResults(jobId) {
   const detail = await detailResp.json();
   currentTrajectory = await trajectoryResp.json();
   currentStats = await statsResp.json();
+  computeTrajectorySegments();
   currentJobId = jobId;
 
   const baseUrl = `/api/jobs/${jobId}`;
@@ -224,6 +231,38 @@ function resizeTrajectoryCanvas() {
   trajectoryCanvas.height = height;
 }
 
+function computeTrajectorySegments() {
+  trajectorySegments = [];
+  if (!currentTrajectory.length) return;
+  const sorted = [...currentTrajectory].sort((a, b) => a.frame - b.frame);
+  let prevDirection = null;
+  let topIndex = null;
+  for (let i = 0; i < sorted.length - 1; i += 1) {
+    const dy = sorted[i + 1].y - sorted[i].y;
+    let current = prevDirection;
+    if (dy <= -DIRECTION_THRESHOLD) current = "up";
+    else if (dy >= DIRECTION_THRESHOLD) current = "down";
+    if (prevDirection === "up" && current === "down" && topIndex === null) {
+      topIndex = i + 1;
+    }
+    if (current) prevDirection = current;
+  }
+  if (topIndex === null) {
+    let minIdx = 0;
+    for (let i = 1; i < sorted.length; i += 1) {
+      if (sorted[i].y < sorted[minIdx].y) minIdx = i;
+    }
+    topIndex = minIdx;
+  }
+  for (let i = 0; i < sorted.length - 1; i += 1) {
+    const start = sorted[i];
+    const end = sorted[i + 1];
+    if (end.frame === start.frame) continue;
+    const phase = i + 1 <= topIndex ? "backswing" : "downswing";
+    trajectorySegments.push({ start, end, phase });
+  }
+}
+
 function drawTrajectory() {
   if (!trajectoryCtx) return;
   trajectoryCtx.clearRect(0, 0, trajectoryCanvas.width, trajectoryCanvas.height);
@@ -236,16 +275,42 @@ function drawTrajectory() {
     return;
   }
 
-  trajectoryCtx.lineWidth = 3;
-  trajectoryCtx.strokeStyle = "#2ecc71";
-  trajectoryCtx.beginPath();
-  trajectoryCtx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i += 1) {
-    trajectoryCtx.lineTo(points[i].x, points[i].y);
-  }
-  trajectoryCtx.stroke();
+  trajectoryCtx.lineWidth = PATH_LINE_WIDTH;
+  trajectoryCtx.lineCap = "round";
+  trajectoryCtx.lineJoin = "round";
 
-  const lastPoint = points[points.length - 1];
+  trajectorySegments.forEach((segment) => {
+    const { start, end, phase } = segment;
+    if (currentFrame < start.frame) return;
+    const colour = phase === "backswing" ? BACKSWING_COLOUR : DOWNSWING_COLOUR;
+    let endX = end.x;
+    let endY = end.y;
+    if (currentFrame < end.frame) {
+      const span = Math.max(1, end.frame - start.frame);
+      const ratio = Math.max(0, Math.min(1, (currentFrame - start.frame) / span));
+      endX = start.x + (end.x - start.x) * ratio;
+      endY = start.y + (end.y - start.y) * ratio;
+    }
+    trajectoryCtx.beginPath();
+    trajectoryCtx.moveTo(start.x, start.y);
+    trajectoryCtx.lineTo(endX, endY);
+    trajectoryCtx.strokeStyle = colour;
+    trajectoryCtx.stroke();
+  });
+
+  const lastSegment = trajectorySegments
+    .filter((segment) => currentFrame >= segment.start.frame)
+    .slice(-1)[0];
+  let lastPoint = points[points.length - 1];
+  if (lastSegment && currentFrame > lastSegment.start.frame && currentFrame < lastSegment.end.frame) {
+    const span = Math.max(1, lastSegment.end.frame - lastSegment.start.frame);
+    const ratio = Math.max(0, Math.min(1, (currentFrame - lastSegment.start.frame) / span));
+    lastPoint = {
+      x: lastSegment.start.x + (lastSegment.end.x - lastSegment.start.x) * ratio,
+      y: lastSegment.start.y + (lastSegment.end.y - lastSegment.start.y) * ratio,
+    };
+  }
+
   trajectoryCtx.fillStyle = "#e74c3c";
   trajectoryCtx.beginPath();
   trajectoryCtx.arc(lastPoint.x, lastPoint.y, 8, 0, Math.PI * 2);
@@ -277,16 +342,17 @@ function renderTrajectoryPlot() {
   });
 
   trajectoryPlotCtx.lineWidth = 2;
-  trajectoryPlotCtx.strokeStyle = "#1d7fde";
-  trajectoryPlotCtx.beginPath();
-
-  const firstConverted = toCanvas(currentTrajectory[0]);
-  trajectoryPlotCtx.moveTo(firstConverted.x, firstConverted.y);
-  for (let i = 1; i < currentTrajectory.length; i += 1) {
-    const converted = toCanvas(currentTrajectory[i]);
-    trajectoryPlotCtx.lineTo(converted.x, converted.y);
-  }
-  trajectoryPlotCtx.stroke();
+  trajectoryPlotCtx.lineCap = "round";
+  trajectoryPlotCtx.lineJoin = "round";
+  trajectorySegments.forEach(({ start, end, phase }) => {
+    const startPoint = toCanvas(start);
+    const endPoint = toCanvas(end);
+    trajectoryPlotCtx.beginPath();
+    trajectoryPlotCtx.moveTo(startPoint.x, startPoint.y);
+    trajectoryPlotCtx.lineTo(endPoint.x, endPoint.y);
+    trajectoryPlotCtx.strokeStyle = phase === "backswing" ? BACKSWING_COLOUR : DOWNSWING_COLOUR;
+    trajectoryPlotCtx.stroke();
+  });
 
   // Draw start and end points
   const startPoint = toCanvas(currentTrajectory[0]);

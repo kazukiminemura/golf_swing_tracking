@@ -146,11 +146,17 @@ job_input = document.getElementById("jobId")
 
 bbox_map: Dict[int, List[float]] = {}
 point_map: Dict[int, Tuple[float, float]] = {}
+path_segments: List[Tuple[int, int, Tuple[float, float], Tuple[float, float], str]] = []
 confidence_map: Dict[int, float] = {}
 fps: float = 30.0
 ready: bool = False
 last_drawn_frame: Optional[int] = None
 callbacks: List = []
+
+BACKSWING_COLOUR = "rgba(66, 178, 255, 0.85)"
+DOWNSWING_COLOUR = "rgba(255, 120, 84, 0.9)"
+PATH_LINE_WIDTH = 3.0
+DIRECTION_THRESHOLD = 1.0
 
 
 def set_status(message: str) -> None:
@@ -158,13 +164,51 @@ def set_status(message: str) -> None:
 
 
 def reset_state() -> None:
-    global bbox_map, point_map, confidence_map, ready, last_drawn_frame
+    global bbox_map, point_map, path_segments, confidence_map, ready, last_drawn_frame
     bbox_map = {}
     point_map = {}
+    path_segments = []
     confidence_map = {}
     ready = False
     last_drawn_frame = None
     ctx.clearRect(0, 0, canvas.width or 0, canvas.height or 0)
+
+
+def compute_path_segments() -> None:
+    """Build ordered swing segments and classify them as backswing or downswing."""
+    global path_segments
+    sorted_points = sorted(point_map.items())
+    path_segments = []
+    if len(sorted_points) < 2:
+        return
+
+    prev_direction: Optional[str] = None
+    top_index: Optional[int] = None
+    for idx in range(len(sorted_points) - 1):
+        y0 = sorted_points[idx][1][1]
+        y1 = sorted_points[idx + 1][1][1]
+        dy = y1 - y0
+        if dy <= -DIRECTION_THRESHOLD:
+            current = "up"
+        elif dy >= DIRECTION_THRESHOLD:
+            current = "down"
+        else:
+            current = prev_direction
+        if prev_direction == "up" and current == "down" and top_index is None:
+            top_index = idx + 1
+        if current is not None:
+            prev_direction = current
+
+    if top_index is None:
+        top_index = min(range(len(sorted_points)), key=lambda i: sorted_points[i][1][1])
+
+    for idx in range(len(sorted_points) - 1):
+        start_frame, start_point = sorted_points[idx]
+        end_frame, end_point = sorted_points[idx + 1]
+        if end_frame == start_frame:
+            continue
+        phase = "backswing" if idx + 1 <= top_index else "downswing"
+        path_segments.append((start_frame, end_frame, start_point, end_point, phase))
 
 
 async def load_job() -> None:
@@ -211,6 +255,8 @@ async def load_job() -> None:
                 bbox_map[frame_no] = [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
             confidence_map[frame_no] = float(entry.get("confidence", 0.0))
 
+        compute_path_segments()
+
         video.src = f"/api/jobs/{job_id}/video"
         video.load()
         ready = True
@@ -241,6 +287,37 @@ def draw_overlay(_event) -> None:
         candidate = last_drawn_frame
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+
+    for start_frame, end_frame, start_point, end_point, phase in path_segments:
+        colour = BACKSWING_COLOUR if phase == "backswing" else DOWNSWING_COLOUR
+        ctx.beginPath()
+        ctx.moveTo(start_point[0], start_point[1])
+        ctx.lineTo(end_point[0], end_point[1])
+        ctx.strokeStyle = colour
+        ctx.lineWidth = PATH_LINE_WIDTH
+        ctx.stroke()
+
+    for start_frame, end_frame, start_point, end_point, phase in path_segments:
+        span = float(max(1, end_frame - start_frame))
+        if candidate <= start_frame:
+            continue
+        if candidate >= end_frame:
+            continue
+        colour = BACKSWING_COLOUR if phase == "backswing" else DOWNSWING_COLOUR
+        ratio = max(0.0, min(1.0, (candidate - start_frame) / span))
+        if ratio <= 0.0:
+            continue
+        current_x = start_point[0] + (end_point[0] - start_point[0]) * ratio
+        current_y = start_point[1] + (end_point[1] - start_point[1]) * ratio
+        ctx.beginPath()
+        ctx.moveTo(start_point[0], start_point[1])
+        ctx.lineTo(current_x, current_y)
+        ctx.strokeStyle = colour
+        ctx.lineWidth = PATH_LINE_WIDTH + 1.0
+        ctx.stroke()
 
     point = point_map.get(candidate)
     bbox = bbox_map.get(candidate)
