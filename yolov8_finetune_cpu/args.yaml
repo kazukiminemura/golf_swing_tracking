@@ -1,8 +1,8 @@
 task: detect
 mode: train
 model: yolov8n.pt
-data: /content/golf_swing_tracking/club_head/club_head.yaml
-epochs: 200
+data: /content/golf_swing_tracking/train_data/club_head.yaml
+epochs: 100
 time: null
 patience: 100
 batch: 4
