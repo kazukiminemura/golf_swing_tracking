@@ -1,0 +1,23 @@
+description: Ultralytics best model trained on /nfs/site/home/kminemur/projects/golf_swing_tracking/club_data/club_head.yaml
+author: Ultralytics
+date: '2025-10-09T22:50:46.191679'
+version: 8.3.208
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: club
+  1: head
+args:
+  batch: 1
+  fraction: 1.0
+  half: false
+  int8: false
+  dynamic: false
+  nms: false
+channels: 3
