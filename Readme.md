@@ -1,66 +1,54 @@
 ## Golf Swing Tracking
 
-This project implements a local-first golf swing analysis workflow powered by OpenVINO and YOLOv8. The system provides both a FastAPI-based web UI and a CLI for batch processing golf swing videos.
+Local-first golf swing analysis with OpenVINO inference and a simple FastAPI web UI. Upload a swing video to get an annotated overlay, trajectory, and speed metrics. A CLI is included for batch/offline runs.
 
 ### Features
 
-- Upload swing videos via browser or CLI and receive an annotated overlay video.
-- YOLOv8 (OpenVINO) based club head detection with a Kalman filter trajectory tracker.
-- Velocity estimation using configurable millimetre-per-pixel calibration.
-- Exported artifacts: overlay MP4, trajectory CSV/JSON, stats JSON, and impact snapshots.
-- Web UI with live job progress via WebSocket and interactive trajectory canvas overlay.
+- Web UI: upload videos, live job progress via WebSocket, result playback with trajectory overlay.
+- Detector: OpenVINO-accelerated YOLO model (IR XML/BIN) with a lightweight tracker and smoothing.
+- Metrics: per-swing trajectory, max/avg speed, impact frame, duration.
+- Artifacts: MP4 overlay video, trajectory CSV/JSON, stats JSON, optional snapshots.
+- Devices: choose `CPU`, `GPU`, or `NPU` per job; compiled models are cached per device.
 
-### Prerequisites
+### Quickstart
 
-- Python 3.10 or later
-- OpenVINO runtime dependencies for your device (CPU/GPU/NPU)
-- (Optional) GPU/NPU drivers if targeting those devices
+- Prereqs: Python 3.10+, pip; for GPU/NPU, install the proper OpenVINO drivers/toolkit for your platform.
+- Install deps:
+  - `pip install -r requirements.txt`
 
-Install dependencies:
+Run the web server:
 
-```bash
-pip install -r requirements.txt
-```
-
-### Running the API Server
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-Open a browser at `http://127.0.0.1:8000/` to access the UI. Upload a swing video, select a target device, and monitor progress in real time. Completed jobs expose download links for all generated artifacts.
-
-API endpoints (partial list):
-
-- `POST /api/jobs` – upload a video for analysis
-- `GET /api/jobs` – list jobs and statuses
-- `GET /api/jobs/{id}/results` – retrieve job summary/artifacts
-- `GET /api/jobs/{id}/video` – download the annotated video
-- `WS /ws/jobs/{id}` – subscribe to live job progress
+- `uvicorn main:app --reload --port 8000`
+- Open http://127.0.0.1:8000 and upload an MP4/MOV/AVI. Pick a device from the dropdown. When finished, use the download links under Results.
 
 ### CLI Usage
 
-```bash
-python -m golftrack.cli analyze path/to/video.mp4 --device CPU
-```
+- Analyze a single video:
+  - `python -m golftrack.cli analyze path\to\video.mp4 --device CPU`
 
-Optional flags:
+- Optional flags:
+  - `--config path\to\config.yaml` set an explicit config file
+  - `--output path\to\out_dir` override the output directory
+  - `--device CPU|GPU|NPU` pick an inference device
+  - `--job-id custom123` set a custom job id
 
-- `--config path/to/config.yaml`: load custom configuration
-- `--output /path/to/output_dir`: override artifact directory
-- `--device GPU|CPU|NPU`: target inference device
+Exit code is non-zero on failure; file paths to artifacts are printed on success.
 
 ### Configuration
 
-Runtime options can be customised via `config.yaml` (auto-detected from the project root) or environment variables:
+You can use a `config.yaml` in the project root (auto-detected) or environment variables. Defaults point to a bundled OpenVINO IR model at `yolov8_finetune_cpu/weights/best_openvino_model/best.xml`.
+
+Example `config.yaml`:
 
 ```yaml
 runtime:
-  device: GPU
-  num_streams: 2
+  device: CPU         # CPU | GPU | NPU
+  num_streams: 1
 model:
   xml: yolov8_finetune_cpu/weights/best_openvino_model/best.xml
   conf_thres: 0.35
+  iou_thres: 0.5
+  input_size: 640
 export:
   out_dir: outputs
 calibration:
@@ -70,39 +58,65 @@ pipeline:
 debug:
   enabled: false
   log_level: INFO
-  log_file: logs/golftrack.log
+  # log_file: logs/golftrack.log
 ```
 
 Environment overrides:
 
-- `GOLFTRACK_CONFIG`: alternate config file
-- `GOLFTRACK_DEVICE`: force device (e.g., `CPU`, `GPU`)
-- `GOLFTRACK_OUTPUT`: output directory
-- `GOLFTRACK_DEBUG`: set to `true` to enable verbose tracing
-- `GOLFTRACK_LOG_LEVEL`: override log level (e.g., `DEBUG`)
-- `GOLFTRACK_LOG_FILE`: write logs to a specific file
+- `GOLFTRACK_CONFIG` path to alternate YAML config
+- `GOLFTRACK_DEVICE` override device (e.g., `CPU`, `GPU`)
+- `GOLFTRACK_OUTPUT` output directory
+- `GOLFTRACK_DEBUG` set `true` to enable debug tracing
+- `GOLFTRACK_LOG_LEVEL` e.g., `DEBUG`, `INFO`
+- `GOLFTRACK_LOG_FILE` write logs to this path
 
-### GPU / NPU Execution
+### Artifacts & Layout
 
-- Ensure the appropriate OpenVINO GPU/NPU drivers are installed (see Intel® OpenVINO™ Toolkit setup guides).
-- Choose the target device per job from the Web UI drop-down or via CLI `--device GPU`.
-- For a default device, set `runtime.device: GPU` in `config.yaml` or export `GOLFTRACK_DEVICE=GPU`.
-- The backend now keeps a dedicated compiled model per device, so you can mix CPU/GPU jobs without restarts.
+- Default output root: `outputs/`
+- Inputs are copied to `outputs/inputs/`.
+- Per-job artifacts in `outputs/artifacts/<job_id>/`, including:
+  - `result.mp4` or `result_h264.mp4`
+  - `trajectory.csv`, `trajectory.json`
+  - `stats.json`
+  - `*.png` snapshots (optional)
+
+### API Endpoints
+
+- `GET /` serve the web UI
+- `GET /healthz` health check
+- `POST /api/jobs` upload a video (form field `file`, optional `device`)
+- `GET /api/jobs` list jobs
+- `GET /api/jobs/{job_id}` job detail
+- `GET /api/jobs/{job_id}/results` job summary + artifacts map
+- `GET /api/jobs/{job_id}/video` annotated MP4
+- `GET /api/jobs/{job_id}/trajectory.csv|json` trajectory data
+- `GET /api/jobs/{job_id}/stats.json` metrics
+- `WS /ws/jobs/{job_id}` live progress events
+- `GET /api/system-usage` CPU/GPU/NPU usage snapshot (best-effort)
+
+### Models
+
+- Default model: OpenVINO IR at `original_model`.
+- To use a different IR, update `model.xml` (and `model.bin` if needed) in config.
+- If you prefer Ultralytics weights for training or export, YOLO11 family weights are hosted by Ultralytics; for example, `yolo11n.pt` is available at:
+  - `https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt`
+
+### GPU/NPU Notes
+
+- CPU runs work with just `pip install openvino` (already in `requirements.txt`).
+- For GPU/NPU, install the appropriate OpenVINO runtime/drivers for your OS and hardware. Then set `--device GPU` or `GOLFTRACK_DEVICE=GPU`.
+
+### Troubleshooting
+
+- OpenVINO plugin not found: ensure OpenVINO runtime is installed for your device; try `CPU` first.
+- PyTorch GPU wheels: if you need CUDA, install the matching `torch`/`torchvision` from the official PyTorch site.
+- Large/long videos: processing is offline; keep the tab open or use the CLI.
 
 ### Repository Layout
 
-- `main.py`: FastAPI application entrypoint
-- `golftrack/`: core package (config, job manager, pipeline, CLI)
-- `static/`: web UI assets
-- `docs/`: requirements and architecture references
-- `outputs/`: generated at runtime for artifacts
-
-### Debugging Failures
-
-Enable `debug.enabled: true` (or export `GOLFTRACK_DEBUG=true`) to capture detailed function-level traces. When active, the service logs entry/exit for key pipeline stages, job workers, and CLI runs, and records stack traces for any failing function. Configure `debug.log_file` to persist logs for later review.
-
-### Next Steps
-
-- Integrate system usage telemetry for GPU/NPU backends
-- Extend tracker to multi-object scenarios and ByteTrack compatibility
-- Add automated tests and synthetic video fixtures
+- `main.py` FastAPI app entry point
+- `golftrack/` core package (config, jobs, pipeline, CLI, server)
+- `static/` web UI assets
+- `docs/` notes and references
+- `yolov8_finetune_cpu/weights/` default OpenVINO IR weights
+- `outputs/` created at runtime for artifacts
