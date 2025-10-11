@@ -31,14 +31,14 @@ names:
 """
 
 def main():
-    ap = argparse.ArgumentParser(description="YOLOv11 fine-tune (club head, CPU only)")
+    ap = argparse.ArgumentParser(description="YOLOv11 fine-tune (club head, GPU-first)")
     ap.add_argument("--data_root", required=True, help="root containing {train,valid}/{images,labels}")
     ap.add_argument("--model", default="yolov11n.pt")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--epochs", type=int, default=200)
-    # On CPU, auto-batch (-1) can be very slow; use a small fixed default.
-    ap.add_argument("--batch", type=int, default=4)
-    ap.add_argument("--device", default="auto", help="Ultralytics device: 'auto'|'cpu'|'0'|'0,1'|'cuda:0'")
+    # GPU-first defaults
+    ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--device", default="0", help="Ultralytics device: 'auto'|'cpu'|'0'|'0,1'|'cuda:0'")
     ap.add_argument("--project", default="runs/club_head")
     ap.add_argument("--name", default="yolov11_finetune_cpu")
     ap.add_argument("--resume", action="store_true")
@@ -84,6 +84,16 @@ def main():
             device_arg = "0" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
         except Exception:
             device_arg = "cpu"
+    else:
+        # If a GPU was requested but CUDA is unavailable, fall back gracefully.
+        if device_arg != "cpu":
+            try:
+                import torch  # noqa: F401
+                if not (getattr(torch, "cuda", None) and torch.cuda.is_available()):
+                    print("[WARN] CUDA is not available. Falling back to CPU.")
+                    device_arg = "cpu"
+            except Exception:
+                device_arg = "cpu"
     print(f"[INFO] using device: {device_arg}")
 
     # --- 学習（指定デバイス） ---
