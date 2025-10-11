@@ -114,6 +114,16 @@
       <h1>Golf Club Head Overlay (PyScript)</h1>
       <p>Enter a completed job ID to stream the analysed video with a live bounding box overlay rendered in the browser using PyScript.</p>
       <div class="controls">
+        <label for="upload">Video</label>
+        <input id="upload" type="file" accept="video/*" />
+        <label for="tracking">Tracking</label>
+        <select id="tracking">
+          <option value="on" selected>On</option>
+          <option value="off">Off</option>
+        </select>
+        <button id="submitBtn" type="button">Submit</button>
+      </div>
+      <div class="controls">
         <label for="jobId">Job ID</label>
         <input id="jobId" type="text" placeholder="example: 20240101-abcdef" autocomplete="off" />
         <button id="loadBtn" type="button">Load</button>
@@ -132,7 +142,7 @@ import asyncio
 import math
 from typing import Dict, List, Optional, Tuple
 
-from js import console, document
+from js import console, document, FormData
 from pyodide.ffi import create_proxy
 from pyodide.http import pyfetch
 
@@ -143,6 +153,9 @@ ctx = canvas.getContext("2d")
 status_el = document.getElementById("status")
 load_btn = document.getElementById("loadBtn")
 job_input = document.getElementById("jobId")
+submit_btn = document.getElementById("submitBtn")
+upload_input = document.getElementById("upload")
+tracking_select = document.getElementById("tracking")
 
 bbox_map: Dict[int, List[float]] = {}
 point_map: Dict[int, Tuple[float, float]] = {}
@@ -268,6 +281,71 @@ async def load_job() -> None:
         ready = False
 
 
+async def wait_for_job(job_id: str) -> None:
+    set_status("Job queued...")
+    while True:
+        try:
+            resp = await pyfetch(f"/api/jobs/{job_id}")
+            if resp.status != 200:
+                await asyncio.sleep(1.0)
+                continue
+            js_payload = await resp.json()
+            data = js_payload.to_py()
+            job = data.get("job", {})
+            status = job.get("status", "")
+            stage = job.get("stage")
+            progress = float(job.get("progress", 0.0) or 0.0)
+            percent = int(max(0.0, min(1.0, progress)) * 100)
+            stage_msg = f" - {stage}" if stage else ""
+            set_status(f"{status} {percent}%{stage_msg}")
+            if status in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                break
+        except Exception as _exc:
+            pass
+        await asyncio.sleep(1.0)
+
+    try:
+        resp = await pyfetch(f"/api/jobs/{job_id}")
+        if resp.status == 200:
+            js_payload = await resp.json()
+            data = js_payload.to_py()
+            status = data.get("job", {}).get("status")
+            if status == "SUCCEEDED":
+                await load_job()
+                return
+    except Exception as _exc:
+        pass
+    set_status("Job not completed successfully.")
+
+
+async def submit_job() -> None:
+    file_list = upload_input.files
+    if not file_list or file_list.length == 0:
+        set_status("Please select a video file to upload.")
+        return
+    file_obj = file_list.item(0)
+    track_value = tracking_select.value or "on"
+    set_status("Uploading video and creating job...")
+    try:
+        fd = FormData.new()
+        fd.append("file", file_obj)
+        fd.append("tracking", track_value)
+        resp = await pyfetch("/api/jobs", method="POST", body=fd)
+        if resp.status != 200:
+            raise RuntimeError(f"submit returned {resp.status}")
+        js_payload = await resp.json()
+        data = js_payload.to_py()
+        job_id = data.get("job_id")
+        if not job_id:
+            raise RuntimeError("missing job_id in response")
+        job_input.value = job_id
+        set_status(f"Job submitted: {job_id}. Processing...")
+        await wait_for_job(job_id)
+    except Exception as exc:
+        console.error(exc)
+        set_status(f"Failed to submit job: {exc}")
+
+
 def ensure_canvas_size() -> None:
     if video.videoWidth and video.videoHeight:
         canvas.width = int(video.videoWidth)
@@ -376,8 +454,9 @@ seek_proxy = create_proxy(draw_overlay)
 resize_proxy = create_proxy(on_resize)
 button_proxy = create_proxy(on_button_click)
 key_proxy = create_proxy(on_key_down)
+submit_proxy = create_proxy(lambda _evt: asyncio.ensure_future(submit_job()))
 
-callbacks.extend([metadata_proxy, timeupdate_proxy, seek_proxy, resize_proxy, button_proxy, key_proxy])
+callbacks.extend([metadata_proxy, timeupdate_proxy, seek_proxy, resize_proxy, button_proxy, key_proxy, submit_proxy])
 
 video.addEventListener("loadedmetadata", metadata_proxy)
 video.addEventListener("timeupdate", timeupdate_proxy)
@@ -387,6 +466,7 @@ video.addEventListener("pause", timeupdate_proxy)
 document.defaultView.addEventListener("resize", resize_proxy)
 load_btn.addEventListener("click", button_proxy)
 job_input.addEventListener("keydown", key_proxy)
+submit_btn.addEventListener("click", submit_proxy)
 
 set_status("Waiting for a job ID...")
     </py-script>

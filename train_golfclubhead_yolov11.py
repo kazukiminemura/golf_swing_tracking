@@ -26,8 +26,8 @@ test: test/images
 
 nc: 2
 names:
-  0: club
-  1: head
+  1: club
+  0: head
 """
 
 def main():

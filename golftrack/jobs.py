@@ -48,7 +48,7 @@ class JobManager:
     def __init__(
         self,
         storage: Storage,
-        pipeline_runner: Callable[[str, Path, Path, str, ProgressCallback], PipelineResult],
+        pipeline_runner: Callable[[str, Path, Path, str, ProgressCallback, Optional[Dict[str, Any]]], PipelineResult],
         device_default: str = "CPU",
         max_workers: int = 1,
         loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -291,6 +291,7 @@ class JobManager:
                     self.storage.job_dir(job_id),
                     record.device,
                     self._make_progress_callback(job_id),
+                    record.params,
                 )
                 if result.device:
                     record.device = result.device

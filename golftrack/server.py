@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -94,6 +94,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         request: Request,
         file: UploadFile = File(...),
         device: Optional[str] = Form(None),
+        tracking: Optional[str] = Form(None),
         manager: JobManager = Depends(get_manager),
     ) -> JobCreateResponse:
         if file.content_type not in {"video/mp4", "video/x-matroska", "video/quicktime", "video/avi", "application/octet-stream"}:
@@ -101,15 +102,25 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         form_device = device.strip().upper() if device else None
         query_device_raw = request.query_params.get("device")
         query_device = query_device_raw.strip().upper() if query_device_raw else None
+        # tracking: "on"/"off" via form or query
+        form_tracking = tracking.strip().lower() if tracking else None
+        query_tracking_raw = request.query_params.get("tracking")
+        query_tracking = query_tracking_raw.strip().lower() if query_tracking_raw else None
+        tracking_choice = form_tracking or query_tracking
+        params: Dict[str, Any] = {}
+        if tracking_choice in {"on", "off"}:
+            params["enable_tracking"] = tracking_choice == "on"
+
         device_choice = form_device or query_device
-        record = await manager.submit(file, device=device_choice)
+        record = await manager.submit(file, device=device_choice, params=params or None)
         logger.info(
-            "Job submitted job_id=%s filename=%s device_form=%s device_query=%s resolved=%s",
+            "Job submitted job_id=%s filename=%s device_form=%s device_query=%s resolved=%s tracking=%s",
             record.id,
             file.filename,
             form_device,
             query_device,
             record.device,
+            params.get("enable_tracking") if params else None,
         )
         return JobCreateResponse(job_id=record.id, status=record.status)
 

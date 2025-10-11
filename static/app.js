@@ -34,6 +34,7 @@ uploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const fileInput = document.getElementById("video-input");
   const deviceSelect = document.getElementById("device-select");
+  const trackingSelect = document.getElementById("tracking-select");
   if (!fileInput.files.length) {
     uploadStatus.textContent = "Please choose a video file.";
     return;
@@ -44,6 +45,9 @@ uploadForm.addEventListener("submit", async (event) => {
   formData.append("file", file);
   if (deviceSelect.value) {
     formData.append("device", deviceSelect.value);
+  }
+  if (trackingSelect && trackingSelect.value) {
+    formData.append("tracking", trackingSelect.value);
   }
 
   uploadButton.disabled = true;

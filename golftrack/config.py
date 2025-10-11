@@ -20,7 +20,8 @@ class RuntimeConfig:
 class ModelConfig:
     """Model loading parameters."""
 
-    xml: Path = Path("yolov8_finetune_cpu/weights/best_openvino_model/best.xml")
+    # xml: Path = Path("yolov11_finetune_cpu/yolov11_finetune_cpu/weights/best_openvino_model/best.xml")
+    xml: Path = Path("best_openvino_model/best.xml")
     bin: Optional[Path] = None
     conf_thres: float = 0.35
     iou_thres: float = 0.5
@@ -71,6 +72,7 @@ class ServerConfig:
 
 @dataclass
 class PipelineConfig:
+    enable_tracking: bool = True
     smoothing_window: int = 5
     min_track_confidence: float = 0.4
     max_age: int = 30

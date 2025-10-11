@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--config", type=Path, help="Optional config YAML")
     analyze.add_argument("--output", type=Path, help="Override output directory")
     analyze.add_argument("--job-id", type=str, help="Custom job id")
+    analyze.add_argument("--tracking", choices=["on", "off"], help="Enable or disable tracker")
 
     return parser
 
@@ -32,6 +33,7 @@ def analyze_command(
     config_path: Optional[Path],
     output_override: Optional[Path],
     job_id: Optional[str],
+    tracking: Optional[str],
 ) -> int:
     if not video.exists():
         logger.error("Input video not found: %s", video)
@@ -48,6 +50,12 @@ def analyze_command(
     if output_override:
         config.export.out_dir = output_override
         config.export.resolve(Path.cwd())
+    if tracking is not None:
+        # Map CLI switch to config flag
+        try:
+            config.pipeline.enable_tracking = (tracking.lower() == "on")
+        except Exception:
+            pass
 
     storage = Storage(config.export.out_dir)
     pipeline = AnalysisPipeline(config)
@@ -100,7 +108,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "analyze":
-        return analyze_command(args.video, args.device, args.config, args.output, args.job_id)
+        return analyze_command(args.video, args.device, args.config, args.output, args.job_id, args.tracking)
 
     parser.print_help()
     return 1

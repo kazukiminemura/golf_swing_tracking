@@ -598,6 +598,7 @@ class AnalysisPipeline:
         output_dir: Path,
         device: Optional[str],
         progress_cb,
+        params: Optional[Dict[str, object]] = None,
     ) -> PipelineResult:
         def emit(stage: str, value: float, message: Optional[str] = None) -> None:
             if logger.isEnabledFor(logging.DEBUG):
@@ -660,7 +661,14 @@ class AnalysisPipeline:
             raise RuntimeError("Failed to initialise VideoWriter for output video.")
         job_video_path = writer_path
 
-        tracker = ClubHeadTracker(self.config.pipeline)
+        # Resolve tracking mode: per-job override via params takes precedence over config
+        use_tracking = bool(getattr(self.config.pipeline, "enable_tracking", True))
+        try:
+            if params and "enable_tracking" in params:
+                use_tracking = bool(params.get("enable_tracking"))
+        except Exception:
+            pass
+        tracker = ClubHeadTracker(self.config.pipeline) if use_tracking else None
         detection_payload: List[Dict[str, float]] = []
         frame_idx = 0
 
@@ -669,98 +677,188 @@ class AnalysisPipeline:
             if not ret:
                 break
 
-            detections = detector.detect(frame)
-            detection_bbox: Optional[Tuple[float, float, float, float]] = None
-            detection_confidence: Optional[float] = None
+            if not use_tracking:
+                detections = detector.detect(frame)
+                detection_bbox: Optional[Tuple[float, float, float, float]] = None
+                detection_confidence: Optional[float] = None
 
-            if detections:
-                if tracker.last_center is None:
+                if detections:
                     ordered_detections = sorted(
                         detections,
                         key=lambda det: self._initial_detection_score(det[0], frame.shape, det[1]),
                         reverse=True,
                     )
-                else:
-                    ordered_detections = detections
 
-                for candidate_bbox, candidate_conf in ordered_detections:
-                    plausible, reason = self._is_plausible_detection(
-                        candidate_bbox,
-                        frame.shape,
-                        frame_idx,
-                        tracker.last_center,
-                        tracker.last_area,
-                        tracker.last_frame_idx,
-                    )
-                    if plausible:
-                        detection_bbox = candidate_bbox
-                        detection_confidence = candidate_conf
-                        break
+                    for candidate_bbox, candidate_conf in ordered_detections:
+                        plausible, reason = self._is_plausible_detection(
+                            candidate_bbox,
+                            frame.shape,
+                            frame_idx,
+                            None,
+                            None,
+                            None,
+                        )
+                        if plausible:
+                            detection_bbox = candidate_bbox
+                            detection_confidence = candidate_conf
+                            break
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "Frame %s detection rejected: %s (bbox=%s conf=%.3f)",
+                                frame_idx,
+                                reason,
+                                candidate_bbox,
+                                candidate_conf,
+                            )
+
+                if detection_bbox is not None and detection_confidence is not None:
+                    bbox, confidence, source = detection_bbox, float(detection_confidence), "detect"
+                    x1, y1, x2, y2 = bbox
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
-                            "Frame %s detection rejected: %s (bbox=%s conf=%.3f)",
+                            "Frame %s club-head %s bbox=(%.2f, %.2f, %.2f, %.2f) conf=%.3f",
                             frame_idx,
-                            reason,
-                            candidate_bbox,
-                            candidate_conf,
+                            "detected",
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            confidence,
                         )
-
-            track_result = tracker.step(detection_bbox, detection_confidence, frame_idx, frame.shape)
-
-            if track_result:
-                bbox, confidence, source = track_result
-                x1, y1, x2, y2 = bbox
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Frame %s club-head %s bbox=(%.2f, %.2f, %.2f, %.2f) conf=%.3f",
-                        frame_idx,
-                        "tracked" if source == "track" else "detected",
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        confidence,
+                    x1, y1, x2, y2 = bbox
+                    detection_payload.append(
+                        {
+                            "frame": frame_idx,
+                            "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                            "confidence": float(confidence),
+                            "x": float((x1 + x2) / 2.0),
+                            "y": float((y1 + y2) / 2.0),
+                            "source": source,
+                        }
                     )
-                x1, y1, x2, y2 = bbox
-                detection_payload.append(
-                    {
-                        "frame": frame_idx,
-                        "bbox": [float(x1), float(y1), float(x2), float(y2)],
-                        "confidence": float(confidence),
-                        "x": float((x1 + x2) / 2.0),
-                        "y": float((y1 + y2) / 2.0),
-                        "source": source,
-                    }
-                )
-                frame_h, frame_w = frame.shape[:2]
-                x1_i = max(0, min(frame_w - 1, int(round(x1))))
-                y1_i = max(0, min(frame_h - 1, int(round(y1))))
-                x2_i = max(0, min(frame_w - 1, int(round(x2))))
-                y2_i = max(0, min(frame_h - 1, int(round(y2))))
-                color = (255, 0, 0) if source == "detect" else (0, 128, 255)
-                cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
-                label = f"{'T' if source == 'track' else 'D'} {confidence:.2f}"
-                text_y = max(0, min(frame_h - 1, y1_i - 10))
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1_i, text_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+                    frame_h, frame_w = frame.shape[:2]
+                    x1_i = max(0, min(frame_w - 1, int(round(x1))))
+                    y1_i = max(0, min(frame_h - 1, int(round(y1))))
+                    x2_i = max(0, min(frame_w - 1, int(round(x2))))
+                    y2_i = max(0, min(frame_h - 1, int(round(y2))))
+                    color = (255, 0, 0)
+                    cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
+                    label = f"D {confidence:.2f}"
+                    text_y = max(0, min(frame_h - 1, y1_i - 10))
+                    cv2.putText(
+                        frame,
+                        label,
+                        (x1_i, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-                cv2.circle(
-                    frame,
-                    (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0))),
-                    6,
-                    (0, 0, 255),
-                    -1,
-                )
-            elif logger.isEnabledFor(logging.DEBUG):
-                logger.debug("Frame %s club-head detection: none", frame_idx)
+                    cv2.circle(
+                        frame,
+                        (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0))),
+                        6,
+                        (0, 0, 255),
+                        -1,
+                    )
+                elif logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Frame %s club-head detection: none", frame_idx)
+            else:
+                # Use tracker-assisted path
+                detections = detector.detect(frame)
+                detection_bbox: Optional[Tuple[float, float, float, float]] = None
+                detection_confidence: Optional[float] = None
+
+                if detections:
+                    if tracker and tracker.last_center is None:
+                        ordered_detections = sorted(
+                            detections,
+                            key=lambda det: self._initial_detection_score(det[0], frame.shape, det[1]),
+                            reverse=True,
+                        )
+                    else:
+                        ordered_detections = detections
+
+                    for candidate_bbox, candidate_conf in ordered_detections:
+                        plausible, reason = self._is_plausible_detection(
+                            candidate_bbox,
+                            frame.shape,
+                            frame_idx,
+                            tracker.last_center if tracker else None,
+                            tracker.last_area if tracker else None,
+                            tracker.last_frame_idx if tracker else None,
+                        )
+                        if plausible:
+                            detection_bbox = candidate_bbox
+                            detection_confidence = candidate_conf
+                            break
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "Frame %s detection rejected: %s (bbox=%s conf=%.3f)",
+                                frame_idx,
+                                reason,
+                                candidate_bbox,
+                                candidate_conf,
+                            )
+
+                track_result = tracker.step(detection_bbox, detection_confidence, frame_idx, frame.shape) if tracker else None
+
+                if track_result:
+                    bbox, confidence, source = track_result
+                    x1, y1, x2, y2 = bbox
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Frame %s club-head %s bbox=(%.2f, %.2f, %.2f, %.2f) conf=%.3f",
+                            frame_idx,
+                            "tracked" if source == "track" else "detected",
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            confidence,
+                        )
+                    x1, y1, x2, y2 = bbox
+                    detection_payload.append(
+                        {
+                            "frame": frame_idx,
+                            "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                            "confidence": float(confidence),
+                            "x": float((x1 + x2) / 2.0),
+                            "y": float((y1 + y2) / 2.0),
+                            "source": source,
+                        }
+                    )
+                    frame_h, frame_w = frame.shape[:2]
+                    x1_i = max(0, min(frame_w - 1, int(round(x1))))
+                    y1_i = max(0, min(frame_h - 1, int(round(y1))))
+                    x2_i = max(0, min(frame_w - 1, int(round(x2))))
+                    y2_i = max(0, min(frame_h - 1, int(round(y2))))
+                    color = (255, 0, 0) if source == "detect" else (0, 128, 255)
+                    cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
+                    label = f"{'T' if source == 'track' else 'D'} {confidence:.2f}"
+                    text_y = max(0, min(frame_h - 1, y1_i - 10))
+                    cv2.putText(
+                        frame,
+                        label,
+                        (x1_i, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+                    cv2.circle(
+                        frame,
+                        (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0))),
+                        6,
+                        (0, 0, 255),
+                        -1,
+                    )
+                elif logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Frame %s club-head detection: none", frame_idx)
 
             writer.write(frame)
 
