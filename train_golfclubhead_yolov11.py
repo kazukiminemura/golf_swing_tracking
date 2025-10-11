@@ -1,4 +1,4 @@
-# train_golfclubhead_yolov8_cpu.py
+# train_golfclubhead_yolov11_cpu.py
 import argparse
 from pathlib import Path
 import sys, platform, importlib, traceback
@@ -31,16 +31,16 @@ names:
 """
 
 def main():
-    ap = argparse.ArgumentParser(description="YOLOv8 fine-tune (club head, CPU only)")
+    ap = argparse.ArgumentParser(description="YOLOv11 fine-tune (club head, CPU only)")
     ap.add_argument("--data_root", required=True, help="root containing {train,valid}/{images,labels}")
-    ap.add_argument("--model", default="yolov8n.pt")
+    ap.add_argument("--model", default="yolov11n.pt")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--epochs", type=int, default=200)
     # On CPU, auto-batch (-1) can be very slow; use a small fixed default.
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--device", default="auto", help="Ultralytics device: 'auto'|'cpu'|'0'|'0,1'|'cuda:0'")
     ap.add_argument("--project", default="runs/club_head")
-    ap.add_argument("--name", default="yolov8_finetune_cpu")
+    ap.add_argument("--name", default="yolov11_finetune_cpu")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--use_existing_yaml", action="store_true", help="Use and rewrite an existing data.yaml in-place")
     ap.add_argument("--export_ov", action="store_true")
